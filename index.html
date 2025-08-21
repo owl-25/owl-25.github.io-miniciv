@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mini Mini Civilization – UNDO付き + 文明評価</title>
+<style>
+  :root{ --size:64px; --gap:8px; }
+  body{ font-family:system-ui,-apple-system,"Segoe UI",sans-serif; margin:0; background:#f6f7fb; color:#222; }
+  header{ padding:14px 16px; background:#fff; border-bottom:1px solid #e3e6ef; display:flex; gap:12px; align-items:center; flex-wrap:wrap;}
+  h1{ font-size:18px; margin:0; }
+  .wrap{ padding:16px; display:grid; gap:16px; max-width:1100px; margin:0 auto; }
+  .card{ background:#fff; border:1px solid #e3e6ef; border-radius:12px; padding:14px; }
+  .row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+  .pill{ padding:4px 8px; background:#eef1ff; border-radius:999px; font-size:12px;}
+  button{ cursor:pointer; border-radius:8px; border:1px solid #cfd5ea; background:#fff; padding:8px 12px; font-weight:600; }
+  button:hover{ background:#f0f3ff;}
+  button:disabled{ opacity:.5; cursor:not-allowed;}
+  .grid{ display:grid; grid-template-columns:repeat(5,var(--size)); grid-auto-rows:var(--size); gap:var(--gap); }
+  .cell{ display:grid; place-items:center; border-radius:10px; box-shadow:0 0 0 1px #d7dbe8 inset; user-select:none; font-size:22px; }
+  .white{ background:#fff; }
+  .grey{ background:#d7dbe8; }
+  .chosen{ outline:3px solid #6a8cff; }
+  .tracks{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .section-title{ font-weight:700; margin:6px 0; }
+  .mono{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .small{ font-size:12px; color:#5b6175;}
+  .boardWrap{ position:relative;}
+  svg.lines{ position:absolute; inset:0; pointer-events:none;}
+  .res{ display:flex; gap:10px; flex-wrap:wrap; }
+  .res > div{ background:#f3f5ff; border:1px solid #dfe3f7; border-radius:10px; padding:6px 10px; }
+  .slot{ display:inline-flex; align-items:center; gap:6px; border:1px dashed #cfd5ea; border-radius:8px; padding:4px 6px; margin:4px; }
+  dialog{ border:1px solid #ccd3ee; border-radius:12px; padding:12px 14px; }
+  dialog::backdrop{ background:rgba(0,0,0,.2); }
+  .inp{ width:60px; padding:4px 6px; border:1px solid #cfd5ea; border-radius:8px; }
+  .hint-pending{ color:#6a8cff; font-weight:600; }
+  .tbl{ border-collapse:collapse; margin-top:10px; }
+  .tbl th,.tbl td{ border:1px solid #cfd5ea; padding:4px 6px; text-align:center; }
+  .tbl th{ background:#f3f5ff; }
+
+  /* 基準値バー */
+  #baselineBar{ margin-top:6px; color:#4b5164; }
+  #baselineBar .chip{ display:inline-block; padding:2px 6px; border:1px solid #cfd5ea; border-radius:999px; margin-right:6px; background:#f6f8ff; }
+  #baselineBar .rest{ display:inline-block; margin-left:6px; word-break:break-all; }
+
+  /* 文明評価バナー */
+  .score-banner{
+    margin-top:8px; padding:10px 12px;
+    border:1px solid #d6e0ff; background:#f6f8ff;
+    border-radius:12px; display:flex; align-items:center; gap:10px;
+  }
+  .score-badge{ font-weight:700; padding:4px 8px; border-radius:999px; background:#e8efff; border:1px solid #c9d7ff; }
+  .score-title{ font-weight:800; }
+  .score-sub{ font-size:12px; color:#5b6175; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mini Mini Civilization – ブラウザ版</h1>
+  <span class="pill">基準値: <span id="baseline">12</span></span>
+  <span class="pill">手数: <span id="turn">0</span>/25</span>
+  <label class="pill">基準方式:
+    <select id="mode">
+      <option value="solo">公式ソロ（近傍へ自動）</option>
+      <option value="random">ランダム</option>
+    </select>
+  </label>
+  <label class="pill">競争:
+    <select id="compMode">
+      <option value="solo">ソロ（閾値比較）</option>
+      <option value="multi">2人以上（左右比較）</option>
+    </select>
+  </label>
+  <button id="resetAll">全面リセット</button>
+</header>
+
+<div class="wrap">
+  <!-- メインボード -->
+  <section class="card">
+    <div class="row"><div class="section-title">メインボード（白マスに 5–20、グレーは未記入）</div>
+      <button id="randomFill">5–20をランダム配置</button>
+      <button id="clearNums">数字クリア</button>
+    </div>
+    <div class="boardWrap">
+      <div id="board" class="grid" aria-label="5x5 board"></div>
+      <svg id="lines" class="lines"></svg>
+    </div>
+    <div id="baselineBar" class="small mono"></div>
+
+    <div class="small">1手目は自由、以降は<strong>隣接8方向</strong>のみ。未記入マス（白/灰）を選ぶと自動で「1」を書き込み、その数で判定（資源なし）。<span id="pendingHint" class="small"></span></div>
+  </section>
+
+  <!-- ステータス -->
+  <section class="card">
+    <div class="section-title">ステータス</div>
+    <div class="res">
+      <div>🍞 食料: <span id="rFood">0</span></div>
+      <div>🧪 科学: <span id="rSci">0</span></div>
+      <div>⚙ 産業: <span id="rInd">0</span></div>
+      <div>🖋 芸術: <span id="rArt">0</span></div>
+      <div>👍 外交: <span id="rDip">0</span></div>
+      <div>💡 発明(未使用): <span id="rInv">0</span></div>
+    </div>
+
+    <div class="tracks">
+      <div>
+        <div class="section-title">開拓（奇数かつ基準より大）</div>
+        <div id="frontier" class="mono small"></div>
+        <div class="small">トラック：<span class="mono">21, 1, 22, 2, 23, 3, 24, 4, 25</span>。選ぶとその番号と左側が×。次にグレーへ書き込み（この時のみ🍞/👍獲得）。満杯なら🍞+1。</div>
+      </div>
+      <div>
+        <div class="section-title">研究（偶数かつ基準より大）</div>
+        <div id="researchSlots" class="small"></div>
+        <!-- 研究の現状テーブル（常時表示） -->
+        <div id="researchTableWrap"></div>
+        <div class="small" style="margin-top:6px;">
+          終了時計算：左→右で<b>値が上昇し続ける</b>連続グループごとに三角数（1,3,6,10,15,21…）を加算。
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">教育（基準以下）</div>
+    <div class="small">1–5→⚙1/🖋2、6–10→⚙2/🖋1、11–15→⚙4/🖋2、16–20→⚙6/🖋2、21–25→⚙8/🖋3。</div>
+  </section>
+
+  <!-- 競争UI -->
+  <section class="card" id="compPanel">
+    <div class="row">
+      <div class="section-title">競争入力（2人以上時）</div>
+      <label>左🧪<input class="inp" id="L_sci" type="number" value="0"></label>
+      <label>左⚙<input class="inp" id="L_ind" type="number" value="0"></label>
+      <label>左👍<input class="inp" id="L_dip" type="number" value="0"></label>
+      <label>左🖋<input class="inp" id="L_art" type="number" value="0"></label>
+      <label>右🧪<input class="inp" id="R_sci" type="number" value="0"></label>
+      <label>右⚙<input class="inp" id="R_ind" type="number" value="0"></label>
+      <label>右👍<input class="inp" id="R_dip" type="number" value="0"></label>
+      <label>右🖋<input class="inp" id="R_art" type="number" value="0"></label>
+    </div>
+    <div class="small">左右と各カテゴリで「同じか上」なら各1点（最大8点）。</div>
+  </section>
+
+  <!-- スコア -->
+  <section class="card">
+    <div class="row">
+      <div class="section-title">得点計算</div>
+      <button id="scoreBtn">得点計算</button>
+      <div id="scoreOut" class="mono"></div>
+    </div>
+    <div class="small">合計 = 💡発明 + 文化(min) + 競争 + 自然。ソロ閾値：🧪25, ⚙25, 👍14, 🖋15。未使用💡×1、min(🍞,🧪,⚙) を加算。自然=開拓未×の数。</div>
+  </section>
+</div>
+
+<!-- アクション用ダイアログ（確定なし・キャンセル=UNDO） -->
+<dialog id="actionDlg">
+  <form method="dialog">
+    <div class="section-title">アクション</div>
+    <div id="actionInfo" class="mono small"></div>
+    <div id="actionBody"></div>
+    <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-start;">
+      <button id="btnUndo" value="cancel">キャンセル（この手を取り消す）</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+/* ====== DOM参照 ====== */
+const board = document.getElementById('board');
+const lines = document.getElementById('lines');
+const baselineEl = document.getElementById('baseline');
+const turnEl = document.getElementById('turn');
+const modeSel = document.getElementById('mode');
+const compSel = document.getElementById('compMode');
+const compPanel = document.getElementById('compPanel');
+const actionDlg = document.getElementById('actionDlg');
+const actionInfo = document.getElementById('actionInfo');
+const actionBody = document.getElementById('actionBody');
+const btnUndo = document.getElementById('btnUndo');
+const pendingHint = document.getElementById('pendingHint');
+const r = (id)=>document.getElementById(id);
+
+/* ====== ステータス ====== */
+const res = { food:0, sci:0, ind:0, art:0, dip:0, inv:0 };
+function updRes(){ r('rFood').textContent=res.food; r('rSci').textContent=res.sci; r('rInd').textContent=res.ind; r('rArt').textContent=res.art; r('rDip').textContent=res.dip; r('rInv').textContent=res.inv; }
+function addRes(key, amt){
+  res[key]+=amt;
+  if(key==='dip'){
+    const got = Math.floor(res.dip/5) - Math.floor((res.dip-amt)/5);
+    if(got>0) addRes('art', got);
+  }
+  if(key==='art'){
+    const got = Math.floor(res.art/4) - Math.floor((res.art-amt)/4);
+    if(got>0) addRes('inv', got);
+  }
+  updRes();
+}
+
+/* ====== 盤面・基準 ====== */
+let cells=[], path=[], baseline=12, usedNumbers=new Set([12]);
+let frontierNumbers=[21,1,22,2,23,3,24,4,25];
+let frontierX = new Set();
+let research = []; // 12スロット（値: 数字 or undefined）
+let pendingGrey = null; // {devNum, baselineSource}
+let moveSnapshot = null; // UNDO用
+
+function triangular(n){ return n*(n+1)/2; }
+function inBounds(i,j){ return i>=0&&i<5&&j>=0&&j<5; }
+function neighbors(i,j){ const out=[]; for(let di=-1;di<=1;di++)for(let dj=-1;dj<=1;dj++){ if(di||dj){ const ni=i+di,nj=j+dj; if(inBounds(ni,nj)) out.push([ni,nj]); } } return out; }
+
+/* グレー配置と資源 */
+const greyMap = [
+  [1,0,0,0,1],
+  [0,1,0,1,0],
+  [0,0,1,0,0],
+  [0,1,0,1,0],
+  [1,0,0,0,1],
+];
+function greyGain(i,j){
+  const corner = (i===0&&j===0)||(i===0&&j===4)||(i===4&&j===0)||(i===4&&j===4);
+  const center = (i===2&&j===2);
+  if(center) return {food:2,dip:2};
+  if(corner) return {food:4,dip:1};
+  return {food:3,dip:1};
+}
+
+/* 研究スロット資源（左→右） */
+const researchGain = [
+  {art:1,dip:1},
+  {sci:1,dip:1},
+  {sci:1,dip:1},
+  {dip:2},
+  {dip:1},
+  {food:1,dip:1},
+  {food:1,dip:1},
+  {dip:1},
+  {dip:2},
+  {sci:1,dip:1},
+  {sci:1,dip:1},
+  {art:1,dip:1},
+];
+
+/* ボード生成＆線 */
+function buildBoard(){
+  board.innerHTML=''; cells=[]; path=[]; lines.innerHTML=''; baseline=12; usedNumbers=new Set([12]);
+  frontierX.clear(); pendingGrey=null; pendingHint.textContent=''; moveSnapshot=null;
+  baselineEl.textContent=baseline; turnEl.textContent='0';
+  for(let i=0;i<5;i++){
+    cells[i]=[];
+    for(let j=0;j<5;j++){
+      const div=document.createElement('div');
+      div.className='cell ' + (greyMap[i][j]?'grey':'white');
+      div.dataset.i=i; div.dataset.j=j; div.dataset.value='';
+      div.addEventListener('click', ()=>onPick(i,j));
+      board.appendChild(div);
+      cells[i][j]=div;
+    }
+  }
+  fitSVG(); renderFrontier(); renderResearch(); renderBaselineBar();
+}
+function fitSVG(){
+  const rect=board.getBoundingClientRect();
+  lines.setAttribute('viewBox',`0 0 ${rect.width} ${rect.height}`);
+  lines.innerHTML='';
+  for(let k=1;k<path.length;k++){
+    const a=cellRect(path[k-1]), b=cellRect(path[k]);
+    lines.innerHTML+=`<line x1="${a.cx}" y1="${a.cy}" x2="${b.cx}" y2="${b.cy}" stroke="#6a8cff" stroke-width="3" />`;
+  }
+}
+function cellRect([i,j]){ const s=parseFloat(getComputedStyle(board).getPropertyValue('--size')); const g=parseFloat(getComputedStyle(board).getPropertyValue('--gap')); return {cx:j*(s+g)+s/2, cy:i*(s+g)+s/2}; }
+window.addEventListener('resize',fitSVG);
+
+/* 基準値バー表示 */
+function renderBaselineBar(){
+  const host = document.getElementById('baselineBar');
+  const remaining = [];
+  for(let n=1;n<=25;n++){ if(!usedNumbers.has(n)) remaining.push(n); }
+  host.innerHTML = `
+    <span class="chip">基準: ${baseline}</span>
+    <span class="chip">使用: ${usedNumbers.size}/25</span>
+    <span class="rest">残り（未使用）: ${remaining.join(', ') || 'なし'}</span>
+  `;
+}
+
+/* 5–20のランダム配置/クリア */
+function randFill(){ const nums=[]; for(let n=5;n<=20;n++) nums.push(n); for(let k=nums.length-1;k>0;k--){ const j=Math.floor(Math.random()*(k+1)); [nums[k],nums[j]]=[nums[j],nums[k]]; } let idx=0; for(let i=0;i<5;i++) for(let j=0;j<5;j++){ const c=cells[i][j]; if(c.classList.contains('white')){ c.textContent=String(nums[idx]); c.dataset.value=String(nums[idx]); idx++; } else { c.textContent=''; c.dataset.value=''; } } }
+function clearNums(){ for(const row of cells) for(const c of row){ if(c.classList.contains('white')){ c.textContent=''; c.dataset.value=''; } } }
+
+/* 基準値更新 */
+function updateBaseline(lastPicked){
+  const mode=modeSel.value;
+  if(mode==='random'){
+    const pool=[]; for(let n=1;n<=25;n++) if(!usedNumbers.has(n)) pool.push(n);
+    if(pool.length===0) return;
+    baseline = pool[Math.floor(Math.random()*pool.length)];
+  }else{
+    const greater = lastPicked>baseline;
+    const dir = greater? 1 : -1;
+    let candidate = lastPicked+dir;
+    while(candidate>=1 && candidate<=25 && usedNumbers.has(candidate)) candidate+=dir;
+    if(candidate<1 || candidate>25){
+      candidate = lastPicked-dir;
+      while(candidate>=1 && candidate<=25 && usedNumbers.has(candidate)) candidate-=dir;
+    }
+    if(candidate>=1 && candidate<=25) baseline=candidate;
+  }
+  usedNumbers.add(baseline);
+  baselineEl.textContent=baseline;
+  renderBaselineBar();
+}
+
+/* ====== UNDO スナップショット ====== */
+function snapshotBeforeAction(cell, prevValue, prevText){
+  moveSnapshot = {
+    baseline: baseline,
+    used: new Set(Array.from(usedNumbers)),
+    res: {...res},
+    research: research.slice(),
+    frontierX: new Set(Array.from(frontierX)),
+    cell_i: +cell.dataset.i,
+    cell_j: +cell.dataset.j,
+    cell_prev_value: prevValue,
+    cell_prev_text: prevText,
+    path_len: path.length,
+  };
+}
+function undoLastPick(){
+  if(!moveSnapshot) { actionDlg.close(); return; }
+  Object.assign(res, moveSnapshot.res); updRes();
+  research = moveSnapshot.research.slice();
+  frontierX = new Set(Array.from(moveSnapshot.frontierX));
+  baseline = moveSnapshot.baseline; baselineEl.textContent = baseline;
+  usedNumbers = new Set(Array.from(moveSnapshot.used));
+  renderBaselineBar();
+
+  if(path.length>0){
+    const last = path[path.length-1];
+    const [i,j] = last;
+    const c = cells[i][j];
+    c.classList.remove('chosen');
+    if(moveSnapshot.cell_i===i && moveSnapshot.cell_j===j){
+      c.dataset.value = moveSnapshot.cell_prev_value || '';
+      c.textContent = moveSnapshot.cell_prev_text || '';
+    }
+    path.pop();
+    fitSVG();
+  }
+  pendingGrey = null; pendingHint.textContent='';
+  moveSnapshot = null;
+  renderFrontier(); renderResearch();
+  actionDlg.close();
+}
+
+/* ====== マス選択 ====== */
+function onPick(i,j){
+  if(pendingGrey) return;
+  const c=cells[i][j];
+  if(path.length){
+    const [pi,pj]=path[path.length-1];
+    const ok = neighbors(pi,pj).some(([ni,nj])=>ni===i&&nj===j);
+    if(!ok) return;
+  }
+  if(c.classList.contains('chosen')) return;
+
+  // 未記入なら1を書き込む（白/灰どちらでも。資源なし）
+  const prevValue = c.dataset.value || '';
+  const prevText  = c.textContent || '';
+  let val;
+  if(!c.dataset.value){ c.textContent='1'; c.dataset.value='1'; val=1; }
+  else { val = Number(c.dataset.value); }
+
+  c.classList.add('chosen'); path.push([i,j]); fitSVG();
+  snapshotBeforeAction(c, prevValue, prevText);
+
+  const gt = val>baseline; const parity = val%2===0? 'even':'odd';
+  showActionDialog({i,j,val,gt,parity});
+}
+
+/* 文字アイコン */
+function icon(k){ return {food:'🍞',sci:'🧪',ind:'⚙',art:'🖋',dip:'👍',inv:'💡'}[k]||k; }
+function gainStr(obj){ return Object.entries(obj).map(([k,v])=>`${icon(k)}+${v}`).join(' '); }
+
+/* ====== アクションダイアログ（確定なし／キャンセル=UNDO） ====== */
+function showActionDialog(ctx){
+  actionDlg.close(); actionBody.innerHTML='';
+  const {val,gt,parity}=ctx;
+  let type = gt? (parity==='odd'?'開拓':'研究') : '教育';
+  actionInfo.textContent = `選んだ数字: ${val}  /  基準 ${baseline}  →  ${gt?'大きい':'小さい(同値含む)'}・${parity==='odd'?'奇数':'偶数'}  ⇒  ${type}`;
+
+  // 💡反転
+  const invBox=document.createElement('div'); invBox.className='small';
+  const btnInv=document.createElement('button'); btnInv.type='button';
+  btnInv.textContent='💡1消費で上下を反転'; btnInv.disabled=(res.inv<=0);
+  let flipped=false;
+  btnInv.onclick=(e)=>{
+    e.preventDefault();
+    if(flipped||res.inv<=0) return;
+    flipped=true; res.inv--; updRes();
+    type = (type==='教育')? (parity==='odd'?'開拓':'研究') : '教育';
+    if(!/（💡使用）$/.test(actionInfo.textContent)) actionInfo.textContent += '（💡使用）';
+    btnInv.disabled=true; renderBody();
+  };
+  invBox.append('（任意）',btnInv); actionBody.appendChild(invBox);
+
+  const body=document.createElement('div'); actionBody.appendChild(body);
+
+  function renderBody(){
+    body.innerHTML='';
+    if(type==='開拓'){
+      const allX = frontierNumbers.every(n=>frontierX.has(n));
+      if(allX){
+        const p=document.createElement('p'); p.className='small'; p.textContent='開拓トラックが埋まっています（開拓不可）。🍞+1 を得ます。';
+        const b=document.createElement('button'); b.type='button'; b.textContent='🍞 +1 を受け取る';
+        b.onclick=()=>{ addRes('food',1); actionDlg.close(); updateBaseline(val); nextTurn(); moveSnapshot=null; };
+        body.append(p,b); return;
+      }
+      body.appendChild(document.createTextNode('開拓番号を選択（左側すべて×）。次に任意のグレーマスへ書き込みます。'));
+      const list=document.createElement('div'); list.style.display='flex'; list.style.flexWrap='wrap'; list.style.gap='6px';
+      frontierNumbers.forEach((n,idx)=>{
+        const b=document.createElement('button');
+        b.type='button'; b.textContent = frontierX.has(n)? `${n} ×` : String(n);
+        if(frontierX.has(n)) b.disabled=true;
+        b.onclick=()=>{ for(let k=0;k<=idx;k++) frontierX.add(frontierNumbers[k]); enableGreyWrite(n, val); actionDlg.close(); moveSnapshot=null; };
+        list.appendChild(b);
+      });
+      body.appendChild(list);
+    }else if(type==='研究'){
+      body.appendChild(document.createTextNode('研究スロットを1つ選び、今回の数字を書き込みます（スロットの資源も獲得）。'));
+      const slots=document.createElement('div'); slots.style.display='flex'; slots.style.flexWrap='wrap'; slots.style.gap='8px'; slots.style.marginTop='8px';
+      for(let k=0;k<12;k++){
+        const g = researchGain[k];
+        const show = (typeof research[k]==='number')? `【${research[k]}】` : '空';
+        const label = (typeof research[k]==='number') ? `#${k+1} ${show}` : `#${k+1} ${gainStr(g)} に書く（空）`;
+        const btn=document.createElement('button'); btn.type='button'; btn.textContent=label;
+        if(typeof research[k]==='number') btn.disabled=true;
+        btn.onclick=()=>{ research[k]=val; for(const key in g) addRes(key, g[key]); actionDlg.close(); updateBaseline(val); nextTurn(); renderResearch(); moveSnapshot=null; };
+        slots.appendChild(btn);
+      }
+      body.appendChild(slots);
+      body.appendChild(buildResearchTable());
+    }else{
+      const opts = val<=5? [ [1,'ind'], [2,'art'] ]
+        : val<=10? [ [2,'ind'], [1,'art'] ]
+        : val<=15? [ [4,'ind'], [2,'art'] ]
+        : val<=20? [ [6,'ind'], [2,'art'] ]
+        : [ [8,'ind'], [3,'art'] ];
+      const b1=document.createElement('button'); b1.type='button'; b1.textContent=`⚙ +${opts[0][0]}`;
+      b1.onclick=()=>{ addRes(opts[0][1], opts[0][0]); actionDlg.close(); updateBaseline(val); nextTurn(); moveSnapshot=null; };
+      const b2=document.createElement('button'); b2.type='button'; b2.textContent=`🖋 +${opts[1][0]}`;
+      b2.onclick=()=>{ addRes(opts[1][1], opts[1][0]); actionDlg.close(); updateBaseline(val); nextTurn(); moveSnapshot=null; };
+      body.append('どちらか獲得： ',b1,b2);
+    }
+  }
+  renderBody();
+  actionDlg.showModal();
+}
+
+/* UNDO ボタン／Esc キャンセル */
+btnUndo.addEventListener('click', (e)=>{ e.preventDefault(); undoLastPick(); });
+actionDlg.addEventListener('cancel', (e)=>{ e.preventDefault(); undoLastPick(); }); // EscでUNDO
+
+/* 研究：現状テーブル */
+function buildResearchTable(){
+  const tbl=document.createElement('table'); tbl.className='tbl';
+  const trh=document.createElement('tr'); for(let i=1;i<=12;i++){ const th=document.createElement('th'); th.textContent='#'+i; trh.appendChild(th); } 
+  const trb=document.createElement('tr'); for(let i=0;i<12;i++){ const td=document.createElement('td'); td.textContent = (typeof research[i]==='number')? research[i] : '空'; trb.appendChild(td); }
+  tbl.appendChild(trh); tbl.appendChild(trb);
+  return tbl;
+}
+
+/* 開拓のグレー記入（委譲） */
+function enableGreyWrite(devNum, baselineSource){ pendingGrey = { devNum, baselineSource }; pendingHint.innerHTML = '（開拓中：グレーマスを1つクリックして数字を置いてください）'; }
+board.addEventListener('click', (e)=>{
+  if(!pendingGrey) return;
+  const c = e.target.closest('.cell'); if(!c || !c.classList.contains('grey')) return; if(c.dataset.value) return;
+  const i=+c.dataset.i, j=+c.dataset.j;
+  c.dataset.value=String(pendingGrey.devNum); c.textContent=String(pendingGrey.devNum);
+  const g = greyGain(i,j); for(const key in g) addRes(key, g[key]);
+  updateBaseline(pendingGrey.baselineSource); pendingGrey = null; pendingHint.textContent=''; nextTurn(); moveSnapshot=null;
+});
+
+/* ターン遷移 */
+function nextTurn(){ turnEl.textContent=String(path.length); renderFrontier(); if(path.length>=25){ alert('25手が終了しました。得点計算ボタンを押してください。'); } }
+
+/* 研究・開拓表示（#n【12】）＋テーブル常時表示 */
+function renderResearch(){
+  const wrap=document.getElementById('researchSlots'); wrap.innerHTML='';
+  const row=document.createElement('div');
+  for(let i=0;i<12;i++){
+    const span=document.createElement('span'); span.className='slot';
+    const label = (typeof research[i]==='number')? `#${i+1}【${research[i]}】` : `#${i+1}（空）`;
+    const gains = ` ${gainStr(researchGain[i])||''}`;
+    span.textContent = `${label}${gains}`;
+    row.appendChild(span);
+  }
+  wrap.appendChild(row);
+  const host = document.getElementById('researchTableWrap');
+  host.innerHTML = ''; host.appendChild(buildResearchTable());
+}
+function renderFrontier(){ r('frontier').textContent = frontierNumbers.map(n=> frontierX.has(n)? `[${n}]` : String(n) ).join(' '); }
+
+/* 科学：左→右で「値が上昇し続ける」連続グループごとに三角数加算 */
+function calcScienceFromResearch(){
+  let total = 0, run = 0, prev = null;
+  for(let i=0;i<12;i++){
+    const v = (typeof research[i]==='number')? research[i] : null;
+    if(v===null){ if(run>0){ total += triangular(run); run=0; prev=null; } continue; }
+    if(prev!==null && v>prev){ run += 1; } else { if(run>0) total += triangular(run); run = 1; }
+    prev = v;
+  }
+  if(run>0) total += triangular(run);
+  return total;
+}
+function naturalScore(){ const all=new Set(frontierNumbers); frontierX.forEach(n=>all.delete(n)); return all.size; }
+function compScore(){
+  const sciEnd = calcScienceFromResearch();
+  const my = { sci: res.sci + sciEnd, ind: res.ind, dip: res.dip, art: res.art };
+  if(compSel.value==='solo'){ return (my.sci>=25) + (my.ind>=25) + (my.dip>=14) + (my.art>=15); }
+  const L = { sci:+r('L_sci').value||0, ind:+r('L_ind').value||0, dip:+r('L_dip').value||0, art:+r('L_art').value||0 };
+  const R = { sci:+r('R_sci').value||0, ind:+r('R_ind').value||0, dip:+r('R_dip').value||0, art:+r('R_art').value||0 };
+  let pts=0; ['sci','ind','dip','art'].forEach(k=>{ if(my[k]>=L[k]) pts++; if(my[k]>=R[k]) pts++; }); return pts;
+}
+
+/* 文明評価（最終得点 → 称号・演出） */
+function ratingInfo(total){
+  if (total < 20) return { title:'知られざる小文明', emoji:'🏺',  sub:'歴史の片隅で静かに息づいた文明。次はもう一歩！' };
+  if (total < 25) return { title:'それなりの文明',   emoji:'🏛️', sub:'人々の営みは続き、いくつかの遺産を残した。' };
+  if (total < 30) return { title:'歴史に残った大文明', emoji:'📜✨', sub:'壮大な文化は後世まで語り継がれる！' };
+  if (total < 35) return { title:'今なおお家続く偉大な文明', emoji:'👑🏰', sub:'繁栄は今も続く。学者も職人も大活躍！' };
+  return { title:'やがて宇宙へと版図を広げる覇者文明', emoji:'🚀🌌', sub:'文明は地平線を越え、星々へ。あなたが歴史を塗り替えた！' };
+}
+
+/* 得点計算（💡+文化min+競争+自然）＋評価バナー表示 */
+function score(){
+  const sciEnd = calcScienceFromResearch();
+  const invPts = res.inv;
+  const cultureMin = Math.min(res.food, res.sci + sciEnd, res.ind);
+  const compPts = compScore();
+  const nat = naturalScore();
+  const total = invPts + cultureMin + compPts + nat;  // 4要素のみ
+  const info = ratingInfo(total);
+
+  r('scoreOut').innerHTML =
+    `💡=${invPts}, 文化(min)=${cultureMin}, 競争=${compPts}, 自然=${nat} → <b>合計 ${total}</b>` +
+    ` <span class="small">（参考: 🧪=${res.sci}+${sciEnd}）</span>` +
+    `<div class="score-banner">
+       <span class="score-badge">${info.emoji}</span>
+       <div>
+         <div class="score-title">${info.title}</div>
+         <div class="score-sub">あなたの文明は <b>${total} 点</b>。${info.sub}</div>
+       </div>
+     </div>`;
+}
+
+/* 初期化 */
+function resetAll(){
+  Object.assign(res,{food:0,sci:0,ind:0,art:0,dip:0,inv:0}); updRes();
+  research=[]; frontierX.clear(); usedNumbers=new Set([12]); baseline=12; baselineEl.textContent=baseline;
+  pendingGrey=null; pendingHint.textContent=''; moveSnapshot=null; buildBoard();
+}
+buildBoard(); updRes();
+
+document.getElementById('randomFill').onclick=randFill;
+document.getElementById('clearNums').onclick=clearNums;
+document.getElementById('scoreBtn').onclick=score;
+document.getElementById('resetAll').onclick=resetAll;
+compSel.addEventListener('change', ()=>{ compPanel.style.display = compSel.value==='multi' ? 'block' : 'none'; });
+compPanel.style.display='none';
+</script>
+</body>
+</html>
